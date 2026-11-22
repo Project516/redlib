@@ -17,6 +17,11 @@ use redlib::{config, duplicates, headers, instance_info, post, search, settings,
 
 use redlib::client::OAUTH_CLIENT;
 
+// musl's malloc serialises the tokio worker threads; the release binaries are static musl.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 // Create Services
 
 // Required for the manifest to be valid
@@ -334,6 +339,7 @@ async fn main() {
 	app
 		.at("/searchTabs.js")
 		.get(|_| resource(include_str!("../static/searchTabs.js"), "text/javascript", false).boxed());
+	app.at("/share.js").get(|_| resource(include_str!("../static/share.js"), "text/javascript", false).boxed());
 
 	app.at("/commits.atom").get(|_| async move { proxy_commit_info().await }.boxed());
 	app.at("/instances.json").get(|_| async move { proxy_instances().await }.boxed());

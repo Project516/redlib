@@ -780,12 +780,13 @@ impl LegacyPreferences {
 			more_replies_new_page: defaults(Preferences::default_off),
 			light_theme: String::new(),
 			dark_theme: String::new(),
+			share_link: String::new(),
 		})
 	}
 }
 
 #[derive(Default, Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
-#[revisioned(revision = 4)]
+#[revisioned(revision = 5)]
 pub struct Preferences {
 	#[revision(start = 1)]
 	#[serde(skip_serializing, skip_deserializing)]
@@ -850,6 +851,9 @@ pub struct Preferences {
 	pub light_theme: String,
 	#[revision(start = 4, default_fn = "default_instance_setting")]
 	pub dark_theme: String,
+	/// Base address shared links point at; empty = instance default.
+	#[revision(start = 5, default_fn = "default_instance_setting")]
+	pub share_link: String,
 }
 
 fn serialize_vec_with_plus<S>(vec: &[String], serializer: S) -> Result<S::Ok, S::Error>
@@ -915,7 +919,20 @@ impl Preferences {
 			more_replies_new_page: setting(req, "more_replies_new_page"),
 			light_theme: setting(req, "light_theme"),
 			dark_theme: setting(req, "dark_theme"),
+			share_link: setting(req, "share_link"),
 		}
+	}
+
+	pub fn share_base(&self) -> String {
+		share_base(
+			&self.share_link,
+			get_setting("REDLIB_DEFAULT_SHARE_LINK").as_deref(),
+			get_setting("REDLIB_FULL_URL").as_deref(),
+		)
+	}
+
+	pub fn share_url(&self, path: &str) -> String {
+		format!("{}{path}", self.share_base())
 	}
 
 	pub fn to_urlencoded(&self) -> Result<String, String> {
@@ -956,6 +973,31 @@ impl Preferences {
 	fn default_off(_revision: u16) -> Result<String, Error> {
 		Ok("off".to_owned())
 	}
+}
+
+/// Turn `r.naa.gg` or `https://r.naa.gg/` into `https://r.naa.gg`; `None` unless http(s).
+pub fn normalize_share_base(input: &str) -> Option<String> {
+	let input = input.trim();
+	if input.is_empty() {
+		return None;
+	}
+	let with_scheme = if input.contains("://") { input.to_owned() } else { format!("https://{input}") };
+	let mut url = Url::parse(&with_scheme).ok()?;
+	if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none_or(str::is_empty) {
+		return None;
+	}
+	url.set_query(None);
+	url.set_fragment(None);
+	Some(url.as_str().trim_end_matches('/').to_owned())
+}
+
+/// First valid of: the user's setting, `REDLIB_DEFAULT_SHARE_LINK`, `REDLIB_FULL_URL`, reddit.
+pub fn share_base(user: &str, default_share_link: Option<&str>, full_url: Option<&str>) -> String {
+	[Some(user), default_share_link, full_url]
+		.into_iter()
+		.flatten()
+		.find_map(normalize_share_base)
+		.unwrap_or_else(|| "https://www.reddit.com".to_owned())
 }
 
 pub fn deflate_compress(i: Vec<u8>) -> Result<Vec<u8>, String> {
@@ -1220,8 +1262,8 @@ static REGEX_URL_WWW: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"https?://w
 static REGEX_URL_OLD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"https?://old\.reddit\.com/(.*)").unwrap());
 static REGEX_URL_NP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"https?://np\.reddit\.com/(.*)").unwrap());
 static REGEX_URL_PLAIN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"https?://reddit\.com/(.*)").unwrap());
-static REGEX_URL_VIDEOS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"https?://v\.redd\.it/(.*)/(DASH|CMAF)_([0-9]{2,4}(\.mp4|$|\?source=fallback))").unwrap());
-static REGEX_URL_VIDEOS_HLS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"https?://v\.redd\.it/(.+)/(HLSPlaylist\.m3u8)").unwrap());
+static REGEX_URL_VIDEOS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"https?://(?:cf\.)?v\.redd\.it/(.*)/(DASH|CMAF)_([0-9]{2,4}(\.mp4|$|\?source=fallback))").unwrap());
+static REGEX_URL_VIDEOS_HLS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"https?://(?:cf\.)?v\.redd\.it/(.+)/(HLSPlaylist\.m3u8)").unwrap());
 static REGEX_URL_PACKAGED_MEDIA: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"https?://packaged-media\.redd\.it/(.*)").unwrap());
 static REGEX_URL_EXTERNAL_PACKAGED_MEDIA: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"https?://external-packaged-media\.redd\.it/(.*)").unwrap());
 static REGEX_URL_IMAGES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"https?://i\.redd\.it/(.*)").unwrap());
@@ -1277,7 +1319,8 @@ pub fn format_url(url: &str) -> String {
 				"old.reddit.com" => capture(&REGEX_URL_OLD, "/", 1),
 				"np.reddit.com" => capture(&REGEX_URL_NP, "/", 1),
 				"reddit.com" => capture(&REGEX_URL_PLAIN, "/", 1),
-				"v.redd.it" => chain!(capture(&REGEX_URL_VIDEOS, "/vid/", 3), capture(&REGEX_URL_VIDEOS_HLS, "/hls/", 2)),
+				// The cookied backend may hand back cf.v.redd.it (Cloudflare-fronted) video URLs; they serve the same media
+				"v.redd.it" | "cf.v.redd.it" => chain!(capture(&REGEX_URL_VIDEOS, "/vid/", 3), capture(&REGEX_URL_VIDEOS_HLS, "/hls/", 2)),
 				"packaged-media.redd.it" => capture(&REGEX_URL_PACKAGED_MEDIA, "/packaged/", 1),
 				"external-packaged-media.redd.it" => capture(&REGEX_URL_EXTERNAL_PACKAGED_MEDIA, "/packaged-external/", 1),
 				"i.redd.it" => capture(&REGEX_URL_IMAGES, "/img/", 1),
@@ -1328,7 +1371,8 @@ pub fn render_bullet_lists(input_text: &str) -> String {
 
 // These are links we want to replace in-body
 static REDDIT_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"href="(https|http|)://(www\.|old\.|np\.|amp\.|new\.|)(reddit\.com|redd\.it)/"#).unwrap());
-static REDDIT_PREVIEW_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"https?://(external-preview|preview|i)\.redd\.it").unwrap());
+// The second group stops `i.redd.it.example.org` from matching.
+static REDDIT_PREVIEW_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"https?://(external-preview|preview|i)\.redd\.it([^\w.-]|$)").unwrap());
 static REDDIT_EMOJI_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"https?://(?:www\.)?redditstatic\.com/[^\s"'<>]*"#).unwrap());
 // A preview link up to its first `</a>`, and the `</p>` if that closes the paragraph
 static REDDIT_PREVIEW_PARAGRAPH_REGEX: LazyLock<Regex> =
@@ -1445,7 +1489,9 @@ pub fn rewrite_urls(input_text: &str) -> String {
 		})
 		.to_string();
 
-	REDDIT_PREVIEW_REGEX.replace_all(&text1, |caps: &regex::Captures<'_>| preview_type(&caps[1])).to_string()
+	REDDIT_PREVIEW_REGEX
+		.replace_all(&text1, |caps: &regex::Captures<'_>| format!("{}{}", preview_type(&caps[1]), &caps[2]))
+		.to_string()
 }
 
 // Match Giphy URLs in comment anchor tags, capturing the GIF ID
@@ -2137,7 +2183,10 @@ mod tests {
 		assert!(super::combined_feed_subreddits("/comments/abc.json").is_empty());
 	}
 
-	use super::{deflate_compress, deflate_decompress, format_num, format_url, render_bullet_lists, rewrite_emotes, rewrite_urls, url_path_basename, Post, Preferences};
+	use super::{
+		deflate_compress, deflate_decompress, format_num, format_url, normalize_share_base, render_bullet_lists, rewrite_emotes, rewrite_urls, share_base, url_path_basename,
+		Post, Preferences,
+	};
 	use super::{page_feed_url, prefix_relative_urls, Media};
 	use serde_json::{json, Value};
 
@@ -2223,6 +2272,9 @@ mod tests {
 		);
 		assert_eq!(format_url("https://v.redd.it/foo/HLSPlaylist.m3u8?a=bar&v=1&f=sd"), "/hls/foo/HLSPlaylist.m3u8");
 		assert_eq!(format_url("https://v.redd.it/foo/HLSPlaylist.m3u8"), "/hls/foo/HLSPlaylist.m3u8");
+		// cookied backend hands out cf.v.redd.it URLs; they must rewrite to the same /hls/ and /vid/ routes
+		assert_eq!(format_url("https://cf.v.redd.it/foo/HLSPlaylist.m3u8?f=hd&v=1&a=bar"), "/hls/foo/HLSPlaylist.m3u8");
+		assert_eq!(format_url("https://cf.v.redd.it/foo/DASH_360.mp4?source=fallback"), "/vid/foo/DASH/360.mp4");
 		assert_eq!(format_url("https://www.redditstatic.com/gold/awards/icon/icon.png"), "/static/gold/awards/icon/icon.png");
 		assert_eq!(
 			format_url("https://www.redditstatic.com/marketplace-assets/v1/core/emotes/snoomoji_emotes/free_emotes_pack/shrug.gif"),
@@ -2267,10 +2319,11 @@ mod tests {
 			more_replies_new_page: "on".to_owned(),
 			light_theme: String::new(),
 			dark_theme: String::new(),
+			share_link: String::new(),
 		};
 		let urlencoded = serde_urlencoded::to_string(prefs).expect("Failed to serialize Prefs");
 
-		assert_eq!(urlencoded, "theme=laserwave&front_page=default&layout=compact&wide=on&blur_spoiler=on&show_nsfw=off&blur_nsfw=on&hide_hls_notification=off&video_quality=best&hide_sidebar_and_summary=off&use_hls=on&autoplay_videos=on&fixed_navbar=on&disable_visit_reddit_confirmation=on&comment_sort=confidence&post_sort=top&subscriptions=memes%2Bmildlyinteresting&filters=&hide_awards=off&hide_score=off&remove_default_feeds=off&geo_filter=GLOBAL&clean_urls=off&posts_per_page=25&max_comment_thread_depth=-1&more_replies_new_page=on&light_theme=&dark_theme=");
+		assert_eq!(urlencoded, "theme=laserwave&front_page=default&layout=compact&wide=on&blur_spoiler=on&show_nsfw=off&blur_nsfw=on&hide_hls_notification=off&video_quality=best&hide_sidebar_and_summary=off&use_hls=on&autoplay_videos=on&fixed_navbar=on&disable_visit_reddit_confirmation=on&comment_sort=confidence&post_sort=top&subscriptions=memes%2Bmildlyinteresting&filters=&hide_awards=off&hide_score=off&remove_default_feeds=off&geo_filter=GLOBAL&clean_urls=off&posts_per_page=25&max_comment_thread_depth=-1&more_replies_new_page=on&light_theme=&dark_theme=&share_link=");
 	}
 
 	#[test]
@@ -2336,6 +2389,10 @@ mod tests {
 			r#"<p><a href="https://preview.redd.it/6awags382xo31.png?width=2560&amp;format=png&amp;auto=webp&amp;s=9c563aed4f07a91bdd249b5a3cea43a79710dcfc">caption 1</a></p>"#;
 		let output = r#"<figure><a href="/preview/pre/6awags382xo31.png?width=2560&amp;format=png&amp;auto=webp&amp;s=9c563aed4f07a91bdd249b5a3cea43a79710dcfc"><img loading="lazy" src="/preview/pre/6awags382xo31.png?width=2560&amp;format=png&amp;auto=webp&amp;s=9c563aed4f07a91bdd249b5a3cea43a79710dcfc"></a><figcaption>caption 1</figcaption></figure>"#;
 		assert_eq!(rewrite_urls(input), output);
+
+		let lookalike = r#"<a href="https://i.redd.it.example.org/a.jpg">https://preview.redd.it-example.org/a.jpg</a>"#;
+		assert_eq!(rewrite_urls(lookalike), lookalike);
+		assert_eq!(rewrite_urls("see https://i.redd.it"), "see /img");
 	}
 
 	#[tokio::test]
@@ -2484,6 +2541,7 @@ How`s your monitor by the way? Any IPS bleed whatsoever? I either got lucky or t
 			&prefs.more_replies_new_page,
 			&prefs.light_theme,
 			&prefs.dark_theme,
+			&prefs.share_link,
 		);
 		let mut cut = bincode::serialized_size(&newer).unwrap() as usize;
 		if !with_geo {
@@ -2506,6 +2564,7 @@ How`s your monitor by the way? Any IPS bleed whatsoever? I either got lucky or t
 			more_replies_new_page: "on".to_owned(),
 			light_theme: "gruvboxlight".to_owned(),
 			dark_theme: "nord".to_owned(),
+			share_link: "r.naa.gg".to_owned(),
 			..Preferences::default()
 		}
 	}
@@ -2522,6 +2581,7 @@ How`s your monitor by the way? Any IPS bleed whatsoever? I either got lucky or t
 		assert_eq!(decoded.posts_per_page, "");
 		assert_eq!(decoded.max_comment_thread_depth, "");
 		assert_eq!(decoded.more_replies_new_page, "off");
+		assert_eq!(decoded.share_link, "");
 	}
 
 	#[test]
@@ -2543,6 +2603,7 @@ How`s your monitor by the way? Any IPS bleed whatsoever? I either got lucky or t
 				more_replies_new_page: "off".to_owned(),
 				light_theme: String::new(),
 				dark_theme: String::new(),
+				share_link: String::new(),
 				..sample_prefs()
 			}
 		);
@@ -2559,9 +2620,57 @@ How`s your monitor by the way? Any IPS bleed whatsoever? I either got lucky or t
 			Preferences {
 				light_theme: String::new(),
 				dark_theme: String::new(),
+				share_link: String::new(),
 				..sample_prefs()
 			}
 		);
+	}
+
+	#[test]
+	fn test_revision_4_code_gets_default_share_link() {
+		// sample_prefs() as exported before revision 5
+		let code = "ϽΟΥºÅµгະයƠಓĕໝΨହŰಆ੧৷۱გખѴʦÆઐʬदōफո۸ཏìΣ୯ൻĴஹɖҏწຽৠѧ๙Ցиഥශѹശဂ૫ऽറ";
+		let bytes = deflate_decompress(base2048::decode(code).unwrap()).unwrap();
+		let decoded = Preferences::from_bincode(&bytes).unwrap();
+		assert_eq!(
+			decoded,
+			Preferences {
+				share_link: String::new(),
+				..sample_prefs()
+			}
+		);
+	}
+
+	#[test]
+	fn share_base_normalizes_the_address() {
+		let norm = normalize_share_base;
+		assert_eq!(norm("r.naa.gg"), Some("https://r.naa.gg".to_owned()));
+		assert_eq!(norm(" r.naa.gg/ "), Some("https://r.naa.gg".to_owned()));
+		assert_eq!(norm("https://r.naa.gg/"), Some("https://r.naa.gg".to_owned()));
+		assert_eq!(norm("http://10.0.2.8:18080"), Some("http://10.0.2.8:18080".to_owned()));
+		assert_eq!(norm("https://example.org/redlib/"), Some("https://example.org/redlib".to_owned()));
+		assert_eq!(norm("HTTPS://R.Naa.GG?x=1#y"), Some("https://r.naa.gg".to_owned()));
+		assert_eq!(norm(""), None);
+		assert_eq!(norm("   "), None);
+		assert_eq!(norm("javascript:alert(1)"), None);
+		assert_eq!(norm("javascript://%0Aalert(1)"), None);
+		assert_eq!(norm("data:text/html,x"), None);
+		assert_eq!(norm("ftp://r.naa.gg"), None);
+		assert_eq!(norm("https://"), None);
+		assert_eq!(norm("not a host"), None);
+	}
+
+	#[test]
+	fn share_base_default_precedence() {
+		let reddit = "https://www.reddit.com";
+		assert_eq!(share_base("", None, None), reddit);
+		assert_eq!(share_base("", None, Some("https://example.org/")), "https://example.org");
+		assert_eq!(share_base("", Some("r.naa.gg"), Some("https://example.org")), "https://r.naa.gg");
+		assert_eq!(share_base("my.host", Some("r.naa.gg"), Some("https://example.org")), "https://my.host");
+		// Invalid values fall through to the next one.
+		assert_eq!(share_base("javascript:alert(1)", Some("r.naa.gg"), None), "https://r.naa.gg");
+		assert_eq!(share_base("javascript:alert(1)", Some("ftp://x"), Some("https://example.org")), "https://example.org");
+		assert_eq!(share_base("javascript:alert(1)", Some(""), Some("")), reddit);
 	}
 
 	#[test]

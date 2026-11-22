@@ -9,9 +9,9 @@ This fork is based on [Nachtalb/redlib](https://github.com/Nachtalb/redlib), its
 | Registry | `quay.io/redlib/redlib` | `ghcr.io/project516/redlib` (forks publish to `ghcr.io/<owner>/<repo>`) |
 | Platforms | `linux/amd64`, `linux/arm64`, `linux/arm/v7` | `linux/amd64`, `linux/386`, `linux/arm64`, `linux/arm/v7`, `linux/arm/v6`, `linux/riscv64`, `linux/mips64le` |
 | Base | Alpine | Distroless `static:nonroot`: static musl binary, no shell or package manager, runs as uid 65532, ~16 MB |
-| Tags | `latest` | `latest` (from `master`) and `sha-<short commit>` |
+| Tags | `latest` | `latest` (from `master`) and `sha-<short commit>`, plus `latest-mimalloc` and `sha-<short commit>-mimalloc` for `linux/amd64` and `linux/arm64` (mimalloc allocator: faster under load, holds more memory) |
 | Health check | Docker `HEALTHCHECK` with `wget /settings` | `GET /healthz` for the orchestrator to probe (the image has no `wget`) |
-| Binaries | Tarballs on versioned releases | The image's static binaries for every platform on the [`latest` release](https://github.com/Project516/redlib/releases/latest), refreshed on every push to `master` ([#44](https://github.com/Nachtalb/redlib/issues/44)), plus untested macOS, Windows and Android builds (target list from [mycodedoesnotcompile2](https://github.com/mycodedoesnotcompile2/redlib_nachtalb_fork_prebuilt_binaries)) |
+| Binaries | Tarballs on versioned releases | The image's static binaries for every platform on the [`latest` release](https://github.com/Project516/redlib/releases/latest), refreshed on every push to `master` ([#44](https://github.com/Nachtalb/redlib/issues/44)), the two `-mimalloc` binaries of those images, plus untested macOS, Windows and Android builds (target list from [mycodedoesnotcompile2](https://github.com/mycodedoesnotcompile2/redlib_nachtalb_fork_prebuilt_binaries)) |
 
 All platforms are cross-compiled natively on the build host and published under one multi-arch tag, so `docker pull` picks the right one.
 
@@ -34,6 +34,7 @@ Bugs present in upstream Redlib that are fixed here:
 - **Post pages failed** with `Failed to parse page JSON data` when Reddit blocked them for anonymous clients. A block is now reported as a block instead of a JSON error.
 - **Text after a `redditstatic.com` link was mangled**: the rewrite regex matched to the end of the line and also caught other hosts (upstream `6aef54e`, `42c5d6f`).
 - **Bodies with many image links hung the page**: the preview-link rewrite re-scanned the whole body once per link, so a few hundred `i.redd.it` links took seconds of CPU. It now rewrites them in one pass.
+- **Lookalike hosts became broken local links**: a link to a host that starts with `i.redd.it`, `preview.redd.it` or `external-preview.redd.it`, such as `i.redd.it.example.org`, was rewritten to a dead path like `/img.example.org/a.jpg`. Only the Reddit hosts themselves are rewritten now.
 - **Subscriptions and filters were wiped** when saving a single setting ([redlib-org#562](https://github.com/redlib-org/redlib/issues/562)).
 - **Instance default post sort ignored** until the user saved their settings once ([redlib-org#521](https://github.com/redlib-org/redlib/pull/521)). With no default set, listings fall back to `hot` ([polak14 `19c6606`](https://github.com/polak14/redlib/commit/19c6606417babb0c082d9ee4948de5008475f45a)).
 - **Crash on a deleted or invalid comment link**: out-of-bounds access when a thread has no comments ([redlib-org#542](https://github.com/redlib-org/redlib/pull/542)).
@@ -138,6 +139,8 @@ Own features:
   ([#69](https://github.com/Nachtalb/redlib/issues/69)).
 - **New Reddit's sidebar**: subreddits show the widgets new Reddit shows (rules you can expand, related communities with their member counts, text boxes, images, link menus) instead of the old-reddit sidebar text mods often left stale. Each box folds on its title and only the rules start open, so big sidebars like r/europe stay short. Subreddits without widgets keep the old sidebar.
 - **`--cacert <FILE>`** or `REDLIB_CACERT`: trusts only the CA certificates in that file for requests to Reddit, to inspect them through a proxy like mitmproxy ([#157](https://github.com/Nachtalb/redlib/issues/157)).
+- **Share links**: a `share` link on post pages and a share button on subreddits open the share sheet or copy an address starting with the "Share links point to" setting.
+- **Optional mimalloc allocator**: `cargo build --features mimalloc` replaces the system allocator (musl's malloc in the static builds, which is slow when many threads allocate) with mimalloc, built not to request transparent huge pages. Faster under load, but holds more memory afterwards; off by default.
 
 ## Configuration
 
@@ -167,6 +170,7 @@ Each has an instance default via `REDLIB_DEFAULT_<NAME>`:
 | Max comment thread depth | `REDLIB_DEFAULT_MAX_COMMENT_THREAD_DEPTH` | `0` (unlimited) |
 | Always open replies in thread view | `REDLIB_DEFAULT_MORE_REPLIES_NEW_PAGE` | `off` |
 | Light theme, dark theme (for the System theme) | `REDLIB_DEFAULT_LIGHT_THEME`, `REDLIB_DEFAULT_DARK_THEME` | empty (built-in light/dark) |
+| Share links point to | `REDLIB_DEFAULT_SHARE_LINK` | `REDLIB_FULL_URL`, else `https://www.reddit.com` |
 
 All of them are documented in [CONFIGURATION.md](CONFIGURATION.md), `.env.example` and `app.json`.
 
@@ -176,7 +180,7 @@ Settings codes (Settings → export / restore) now carry a format revision:
 
 - **New codes** start with a marker byte and are revisioned. A code exported before a setting existed restores that setting to its default.
 - **Old codes** from upstream Redlib still restore. Settings they don't contain get their defaults.
-- Settings added in this fork belong to revision 2, except "Always open replies in thread view" in revision 3 and the light and dark theme in revision 4: older revisions' codes were already in use, and a new field in them would stop those codes from restoring.
+- Settings added in this fork belong to revision 2, except "Always open replies in thread view" in revision 3, the light and dark theme in revision 4 and the share link in revision 5: older revisions' codes were already in use, and a new field in them would stop those codes from restoring.
 
 Codes exported from this fork can't be restored on upstream Redlib.
 
