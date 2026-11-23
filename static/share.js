@@ -8,10 +8,26 @@ function copy(text) {
     field.style.position = "fixed";
     field.style.opacity = "0";
     document.body.append(field);
-    field.select();
-    const copied = document.execCommand("copy");
-    field.remove();
-    return copied ? Promise.resolve() : Promise.reject();
+    try {
+        field.select();
+        return document.execCommand("copy") ? Promise.resolve() : Promise.reject();
+    } catch (error) {
+        return Promise.reject(error);
+    } finally {
+        field.remove();
+    }
+}
+
+// When copying fails too, show the address to copy by hand instead of leaving the page.
+function copyLink(link) {
+    copy(link.href).then(
+        () => {
+            link.classList.add("copied");
+            clearTimeout(link.copiedTimer);
+            link.copiedTimer = setTimeout(() => link.classList.remove("copied"), 2000);
+        },
+        () => prompt("Copy this link:", link.href),
+    );
 }
 
 document.addEventListener("click", (event) => {
@@ -19,16 +35,11 @@ document.addEventListener("click", (event) => {
     if (!link) return;
     event.preventDefault();
     if (navigator.share) {
-        navigator.share({ url: link.href, title: document.title }).catch(() => {});
+        navigator.share({ url: link.href, title: document.title }).catch((error) => {
+            if (error.name !== "AbortError") copyLink(link);
+        });
         return;
     }
-    copy(link.href).then(
-        () => {
-            link.classList.add("copied");
-            clearTimeout(link.copiedTimer);
-            link.copiedTimer = setTimeout(() => link.classList.remove("copied"), 2000);
-        },
-        () => location.assign(link.href),
-    );
+    copyLink(link);
 });
 // @license-end
