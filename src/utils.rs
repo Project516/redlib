@@ -1007,10 +1007,18 @@ pub fn deflate_compress(i: Vec<u8>) -> Result<Vec<u8>, String> {
 	e.finish().into_result().map_err(|e| e.to_string())
 }
 
+/// What a settings code may inflate to. Settings are a few kilobytes; a megabyte of zeros deflates to about one.
+const MAX_INFLATED_BYTES: u64 = 1024 * 1024;
+
 pub fn deflate_decompress(i: Vec<u8>) -> Result<Vec<u8>, String> {
-	let mut decoder = Decoder::new(&i[..]);
 	let mut out = Vec::new();
-	decoder.read_to_end(&mut out).map_err(|e| format!("Failed to read from gzip decoder: {e}"))?;
+	Decoder::new(&i[..])
+		.take(MAX_INFLATED_BYTES + 1)
+		.read_to_end(&mut out)
+		.map_err(|e| format!("Failed to read from gzip decoder: {e}"))?;
+	if out.len() as u64 > MAX_INFLATED_BYTES {
+		return Err("Decompressed data is too large".to_string());
+	}
 	Ok(out)
 }
 
@@ -1392,6 +1400,25 @@ pub fn body_html(item: &Value, markdown_key: &str, html_key: &str) -> String {
 	}
 }
 
+/// The schemes a link in a post or comment may have, as in Reddit's own markdown renderer.
+const LINK_SCHEMES: [&str; 12] = ["http", "https", "ftp", "mailto", "git", "steam", "irc", "ircs", "news", "mumble", "ssh", "ts3server"];
+
+/// Whether `url` may be a link target or image source in rendered markdown
+/// and richtext: a relative URL or one of `LINK_SCHEMES`, so no `javascript:`
+/// or `data:`. Browsers drop tabs and line breaks from a URL before they read
+/// its scheme, so those are refused rather than looked through.
+pub fn is_safe_link(url: &str) -> bool {
+	let url = url.trim();
+	if url.contains(char::is_control) {
+		return false;
+	}
+	// The scheme ends at the first `:`, unless the path, query or fragment starts before it
+	match url.split_once(':') {
+		Some((scheme, _)) if !scheme.contains(['/', '?', '#']) => LINK_SCHEMES.iter().any(|allowed| scheme.eq_ignore_ascii_case(allowed)),
+		_ => true,
+	}
+}
+
 /// Renders Reddit markdown, with syntax highlighting in code blocks.
 pub fn markdown_html(markdown: &str) -> String {
 	use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
@@ -1414,6 +1441,19 @@ pub fn markdown_html(markdown: &str) -> String {
 		Event::End(TagEnd::CodeBlock) => code.take().map(|(lang, text)| Event::Html(highlight(&lang, &text).into())),
 		// Reddit shows HTML in markdown as text
 		Event::Html(html) | Event::InlineHtml(html) => Some(Event::Text(html)),
+		// The parser takes any scheme; Reddit's HTML, which this stands in for, doesn't
+		Event::Start(Tag::Link { link_type, dest_url, title, id }) if !is_safe_link(&dest_url) => Some(Event::Start(Tag::Link {
+			link_type,
+			dest_url: "".into(),
+			title,
+			id,
+		})),
+		Event::Start(Tag::Image { link_type, dest_url, title, id }) if !is_safe_link(&dest_url) => Some(Event::Start(Tag::Image {
+			link_type,
+			dest_url: "".into(),
+			title,
+			id,
+		})),
 		event => Some(event),
 	});
 	let mut html = String::from("<div class=\"md\">");
@@ -1558,7 +1598,9 @@ pub fn rewrite_emotes(media_metadata: &Value, comment: String) -> String {
 		index -= 1;
 
 		// Convert our current index in id_vec into a string so we can search through it with regex
-		let current_id = id_vec[index].to_string();
+		let Some(current_id) = id_vec.get(index).map(ToString::to_string) else {
+			continue;
+		};
 
 		/* The ID number can be multiple lengths, so we capture it with regex.
 		We also want to only attempt anything when we get matches to avoid panicking */
@@ -1566,19 +1608,21 @@ pub fn rewrite_emotes(media_metadata: &Value, comment: String) -> String {
 			// Format the ID to include the colons it has in the comment text
 			let id = format!(":{}:", &id_capture[1]);
 
-			// Convert current link to string to search through it with the regex
-			let link = link_vec[index].to_string();
+			// The link as text to search through it with the regex
+			let link = link_vec[index].as_str().unwrap_or_default();
 
 			// Make sure we only do operations when we get matches, otherwise we panic when trying to access the first match
-			if let Some(link_capture) = REDDIT_EMOTE_LINK_REGEX.captures(&link) {
+			if let Some(link_capture) = REDDIT_EMOTE_LINK_REGEX.captures(link) {
 				/* Reddit sends a size for the image based on whether it's alone or accompanied by text.
 				It's a good idea and makes everything look nicer, so we'll do the same. */
-				let size = media_metadata.json_path(&size_path).first().unwrap().to_string();
+				let Some(size) = media_metadata.json_path(&size_path).first().and_then(Value::as_u64) else {
+					continue;
+				};
 
 				// Replace the ID we found earlier in the comment with the respective image and it's link from the regex capture
 				let to_replace_with = format!(
-					"<img loading=\"lazy\" src=\"/emote/{} width=\"{size}\" height=\"{size}\" style=\"vertical-align:text-bottom\">",
-					&link_capture[1]
+					"<img loading=\"lazy\" src=\"/emote/{}\" width=\"{size}\" height=\"{size}\" style=\"vertical-align:text-bottom\">",
+					htmlescape::encode_minimal(&link_capture[1])
 				);
 
 				// Inside the comment replace the ID we found with the string that will embed the image
@@ -1675,12 +1719,22 @@ pub fn template(t: &impl Template) -> Response<Body> {
 		.unwrap_or_default()
 }
 
+/// Whether `path` stays on this instance. Browsers read `//host` and `/\host`
+/// as another site, and drop tabs and line breaks before they look.
+fn is_local_path(path: &str) -> bool {
+	let mut chars = path.chars();
+	chars.next() == Some('/') && !matches!(chars.next(), Some('/' | '\\')) && !path.contains(char::is_control)
+}
+
+/// Redirects to `path` on this instance, or to `/` when it leads elsewhere:
+/// part of it often comes from the request or from Reddit.
 pub fn redirect(path: &str) -> Response<Body> {
+	let path = if is_local_path(path) { path } else { "/" };
 	Response::builder()
 		.status(302)
 		.header("content-type", "text/html")
 		.header("Location", path)
-		.body(format!("Redirecting to <a href=\"{path}\">{path}</a>...").into())
+		.body(format!("Redirecting to <a href=\"{0}\">{0}</a>...", htmlescape::encode_minimal(path)).into())
 		.unwrap_or_default()
 }
 
@@ -1842,6 +1896,24 @@ pub fn theme_label(theme: &str) -> &str {
 pub fn short_git_hash() -> &'static str {
 	let hash = env!("GIT_HASH").trim();
 	hash.get(..7).unwrap_or(hash)
+}
+
+/// The release version, or `dev-<short hash>` for builds between releases.
+pub fn version() -> &'static str {
+	env!("REDLIB_VERSION")
+}
+
+/// The GitHub release of this build, or its commit for builds between releases.
+pub fn version_url() -> String {
+	version_url_for(&get_source_url(), version(), env!("GIT_HASH"))
+}
+
+fn version_url_for(source: &str, version: &str, commit: &str) -> String {
+	if version.starts_with("dev-") {
+		format!("{source}/commit/{commit}")
+	} else {
+		format!("{source}/releases/tag/{version}")
+	}
 }
 
 /// Determines if a request should redirect to a NSFW landing gate.
@@ -2167,6 +2239,34 @@ fn get_mime_type(url: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
 	#[test]
+	fn test_redirect_stays_on_this_instance() {
+		let location = |path: &str| super::redirect(path).headers()["Location"].to_str().unwrap().to_string();
+		for local in ["/", "/settings", "/r/rust/new?after=t3_x&t=day#top", "/search?q=https://example.org//x"] {
+			assert_eq!(location(local), local);
+		}
+		for elsewhere in [
+			"//example.org",
+			"/\\example.org",
+			"/\t/example.org",
+			"https://example.org/",
+			"javascript:alert(1)",
+			"example.org",
+			"",
+		] {
+			assert_eq!(location(elsewhere), "/", "{elsewhere:?}");
+		}
+	}
+
+	#[tokio::test]
+	async fn test_redirect_body_escapes_the_path() {
+		let body = super::redirect("/search?q=\"><img src=x>&t=all").into_body().collect_bytes().await.unwrap();
+		assert_eq!(
+			String::from_utf8_lossy(&body),
+			r#"Redirecting to <a href="/search?q=&quot;&gt;&lt;img src=x&gt;&amp;t=all">/search?q=&quot;&gt;&lt;img src=x&gt;&amp;t=all</a>..."#
+		);
+	}
+
+	#[test]
 	fn test_time_unknown_is_empty() {
 		// A missing timestamp parses as 0; show nothing instead of Jan 01 1970
 		assert_eq!(super::time(0.0), (String::new(), String::new()));
@@ -2204,6 +2304,50 @@ mod tests {
 	fn test_markdown_shows_html_as_text() {
 		let html = crate::utils::markdown_html("<script>alert(1)</script>\n\n```\nx\n```\n\nhi <img src=x onerror=alert(1)>");
 		assert!(!html.contains("<script") && !html.contains("<img"), "{html}");
+	}
+
+	#[test]
+	fn test_is_safe_link() {
+		for safe in [
+			"https://example.org/a?b=c:d#e",
+			"HTTP://example.org",
+			" https://example.org ",
+			"mailto:a@example.org",
+			"steam://run/440",
+			"/r/rust",
+			"//example.org/a",
+			"#wiki_rules",
+			"wiki/index",
+			"?sort=new&t=1:2",
+			"",
+		] {
+			assert!(super::is_safe_link(safe), "{safe:?}");
+		}
+		for unsafe_link in [
+			"javascript:alert(1)",
+			"JavaScript:alert(1)",
+			" javascript:alert(1)",
+			"java\tscript:alert(1)",
+			"java\nscript:alert(1)",
+			"\u{1}javascript:alert(1)",
+			"data:text/html,<script>alert(1)</script>",
+			"vbscript:x",
+			"blob:https://example.org/x",
+			"https\t://example.org",
+		] {
+			assert!(!super::is_safe_link(unsafe_link), "{unsafe_link:?}");
+		}
+	}
+
+	#[test]
+	fn test_markdown_links_only_safe_schemes() {
+		let html = crate::utils::markdown_html(
+			"```\nx\n```\n\n[a](javascript:alert(1)) [b](https://example.org/b) [c](/r/rust) ![d](data:image/svg+xml,x) ![e](https://i.redd.it/e.png) <javascript:alert(2)>",
+		);
+		assert!(!html.contains("href=\"javascript") && !html.contains("src=\"data"), "{html}");
+		assert!(html.contains(r#"<a href="">a</a>"#), "{html}");
+		assert!(html.contains(r#"<a href="https://example.org/b">b</a> <a href="/r/rust">c</a>"#), "{html}");
+		assert!(html.contains(r#"<img src="" alt="d" /> <img src="https://i.redd.it/e.png" alt="e" />"#), "{html}");
 	}
 
 	#[test]
@@ -2458,6 +2602,21 @@ mod tests {
 	}
 
 	#[test]
+	fn test_emote_metadata_cannot_add_markup_or_panic() {
+		let comment = "<p>:1:</p>";
+		let emote = |link: &str, size: Value| json!({ "emote|t5_x|1": { "id": "emote|t5_x|1", "s": { "u": link, "y": size } } });
+		let link = "https://reddit-econ-prod-assets-permanent.s3.amazonaws.com/asset-manager/t5_x/a.png";
+		assert_eq!(
+			rewrite_emotes(&emote(&format!("{link}\" onerror=\"alert(1)"), json!(20)), comment.to_string()),
+			r#"<p><img loading="lazy" src="/emote/t5_x/a.png&quot; onerror=&quot;alert(1)" width="20" height="20" style="vertical-align:text-bottom"></p>"#
+		);
+		// A size that isn't a number, no size, and a link without an id
+		assert_eq!(rewrite_emotes(&emote(link, json!("20\" onload=\"x")), comment.to_string()), comment);
+		assert_eq!(rewrite_emotes(&json!({ "a": { "id": "emote|t5_x|1", "s": { "u": link } } }), comment.to_string()), comment);
+		assert_eq!(rewrite_emotes(&json!({ "a": { "s": { "u": link, "y": 20 } } }), comment.to_string()), comment);
+	}
+
+	#[test]
 	fn test_rewriting_bullet_list() {
 		let input = r#"<div class="md"><p>Hi, I&#39;ve bought this very same monitor and found no calibration whatsoever. I have an ICC profile that has been set up since I&#39;ve installed its driver from the LG website and it works ok. I also used <a href="http://www.lagom.nl/lcd-test/">http://www.lagom.nl/lcd-test/</a> to calibrate it. After some good tinkering I&#39;ve found the following settings + the color profile from the driver gets me past all the tests perfectly:
 - Brightness 50 (still have to settle on this one, it&#39;s personal preference, it controls the backlight, not the colors)
@@ -2690,6 +2849,14 @@ How`s your monitor by the way? Any IPS bleed whatsoever? I either got lucky or t
 	}
 
 	#[test]
+	fn test_inflating_stops_at_the_limit() {
+		assert_eq!(deflate_decompress(deflate_compress(vec![0; 4096]).unwrap()).unwrap().len(), 4096);
+		// a few kilobytes that would inflate to 8 MB
+		let bomb = deflate_compress(vec![0; 8 * 1024 * 1024]).unwrap();
+		assert!(deflate_decompress(bomb).is_err());
+	}
+
+	#[test]
 	fn test_code_string_round_trip() {
 		let prefs = sample_prefs();
 		let code = prefs.to_bincode_str().unwrap();
@@ -2748,5 +2915,12 @@ How`s your monitor by the way? Any IPS bleed whatsoever? I either got lucky or t
 			r#"<a href="https://redlib.example/r/rust">r/rust</a><img src="https://redlib.example/preview/pre/x.png"><a href="//example.com">x</a><a href="https://a.b/c">y</a>"#
 		);
 		assert_eq!(prefix_relative_urls(html, ""), html);
+	}
+
+	#[test]
+	fn version_url_links_the_release_or_the_commit() {
+		let source = "https://github.com/redlib-org/redlib";
+		assert_eq!(super::version_url_for(source, "2026.1102.1", "abc"), format!("{source}/releases/tag/2026.1102.1"));
+		assert_eq!(super::version_url_for(source, "dev-0123456", "0123456789"), format!("{source}/commit/0123456789"));
 	}
 }

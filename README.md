@@ -10,7 +10,7 @@ An alternative private front-end to Reddit, with its origins in [Libreddit](http
 
 > [!IMPORTANT]
 > **This is a fork of [redlib-org/redlib](https://github.com/redlib-org/redlib), built on [Nachtalb/redlib](https://github.com/Nachtalb/redlib).**
-> It ships multi-arch images for amd64, 386, arm64, arm/v7, arm/v6, riscv64 and mips64le, and includes many features and fixes from unmerged upstream pull requests plus its own. See [FORK.md](FORK.md) for the full list of changes.
+> It ships multi-arch images for amd64, 386, arm64, arm/v7, arm/v6, riscv64 and mips64le, and includes many features and fixes from unmerged upstream pull requests plus its own.
 
 > [!TIP]
 > Run this fork's image, **`ghcr.io/project516/redlib:latest`**, rather than upstream's `quay.io/redlib/redlib`.
@@ -104,7 +104,14 @@ This section covers multiple ways of deploying Redlib. Using Docker is recommend
 
 For configuration options, see [CONFIGURATION.md](CONFIGURATION.md).
 
-Images are on [ghcr.io](https://github.com/Project516/redlib/pkgs/container/redlib) for `amd64`, `386`, `arm64`, `arm/v7`, `arm/v6`, `riscv64` and `mips64le`. For `amd64` and `arm64` there are also `latest-mimalloc` and `sha-<commit>-mimalloc` tags, built with the mimalloc allocator: faster under load, but they hold more memory afterwards.
+Images are on [ghcr.io](https://github.com/Project516/redlib/pkgs/container/redlib) for `amd64`, `386`, `arm64`, `arm/v7`, `arm/v6`, `riscv64` and `mips64le`, with these tags:
+
+- `latest`: the newest release.
+- `<version>`, like `2026.1102.1`: one release; it never changes.
+- `dev`: the newest commit on `master`, between releases.
+- `sha-<commit>`: one commit on `master`; it never changes.
+
+For `amd64` and `arm64` every tag also has a `-mimalloc` variant (`latest-mimalloc`, …), built with the mimalloc allocator: faster under load, but it holds more memory afterwards.
 
 <details>
 <summary><b>Docker Compose</b></summary>
@@ -148,7 +155,7 @@ systemctl --user status redlib.service  # check on it
 <details>
 <summary><b>Binary</b></summary>
 
-Grab a binary from [the latest release](https://github.com/Project516/redlib/releases/latest), rebuilt on every push to `master`. It has static Linux builds for `x86_64`, `i686`, `aarch64`, `armv7`, `arm` (v6), `riscv64` and `mips64el`, plus macOS, Windows and Android builds that this fork doesn't test, and `SHA256SUMS`. `redlib-x86_64-unknown-linux-musl-mimalloc` and `redlib-aarch64-unknown-linux-musl-mimalloc` are the mimalloc builds from the `-mimalloc` images.
+Grab a binary from [the latest release](https://github.com/Project516/redlib/releases/latest). Every release has static Linux builds for `x86_64`, `i686`, `aarch64`, `armv7`, `arm` (v6), `riscv64` and `mips64el`, plus macOS, Windows and Android builds that this fork doesn't test, and `SHA256SUMS`. `redlib-x86_64-unknown-linux-musl-mimalloc` and `redlib-aarch64-unknown-linux-musl-mimalloc` are the mimalloc builds from the `-mimalloc` images.
 
 ```bash
 curl -fL -o redlib https://github.com/Project516/redlib/releases/latest/download/redlib-x86_64-unknown-linux-musl  # pick your architecture
@@ -271,6 +278,8 @@ cargo build --release              # the binary ends up in target/release/redlib
 cargo build --release --features mimalloc  # optional: mimalloc allocator, faster under load, holds more memory
 ```
 
+A build from a git checkout reports its version as `dev-<commit>`; with `REDLIB_RELEASE=1` set during the build it reports the version in `Cargo.toml`, like the release builds. A build from a release's source archive, which has no git information, reports the release version on its own.
+
 Redlib talks to Reddit through [wreq](https://github.com/0x676e67/wreq), which uses [BoringSSL](https://boringssl.googlesource.com/boringssl/) with wreq's patches (via the [`btls-sys`](https://crates.io/crates/btls-sys) crate) so its TLS handshake looks like a real browser's. The BoringSSL source ships with the crate and is patched and compiled during the build, so you need `git`, `cmake`, a C/C++ compiler and `libclang` (for bindgen). Certificates are checked against Mozilla's trust store compiled into the binary.
 
 On Debian/Ubuntu:
@@ -287,6 +296,16 @@ winget install -i Kitware.CMake
 winget install -i NASM.NASM
 winget install -i LLVM.LLVM
 ```
+
+---
+
+# Releasing
+
+For maintainers. Run **Actions → Release → Run workflow** on `main`. It picks the next version `YYYY.MDD.N` (like `2026.1102.1`), commits and tags it on `main`, builds the images and binaries, and publishes the GitHub release with generated notes. If it fails after the commit, use **Re-run failed jobs**: a new run makes a new version.
+
+- Label pull requests that make users change something (settings, defaults, endpoints, the image, binary names) `breaking`; the notes list those first.
+- The `build-image` label gets a pull request a `pr-<number>` test image of its current commit. Read the changes first, and re-add the label after new commits.
+- One-time setup: a GitHub App with Contents read and write, installed on this repository and allowed past the rule protecting `main`, with its client ID and private key in the secrets `RELEASE_APP_CLIENT_ID` and `RELEASE_APP_PRIVATE_KEY`.
 
 ---
 
