@@ -2,7 +2,7 @@
 
 ## What this is
 
-A fork of [Redlib](https://github.com/redlib-org/redlib), the private Reddit front-end. It starts from [Nachtalb/redlib](https://github.com/Nachtalb/redlib), which keeps working while Reddit blocks anonymous requests, and adds fixes from upstream pull requests and other forks. `FORK.md` lists every change against upstream.
+A fork of [Redlib](https://github.com/redlib-org/redlib), the private Reddit front-end. It starts from [Nachtalb/redlib](https://github.com/Nachtalb/redlib), which keeps working while Reddit blocks anonymous requests, and adds fixes from upstream pull requests and other forks.
 
 ## Direction
 
@@ -15,7 +15,7 @@ A fork of [Redlib](https://github.com/redlib-org/redlib), the private Reddit fro
 
 - `upstream` is redlib-org/redlib, `nachtalb` is Nachtalb/redlib. Merge both into a branch and land it through a PR. Do not rebase: the history carries other people's commits.
 - When a sync conflicts, keep the side that builds and port the other side's fix in its own commit.
-- Each change taken from a PR or fork gets a line in `FORK.md` with its source link.
+- List each change taken from another PR or fork in the sync PR's description with its source link.
 
 ## Glossary
 

@@ -342,6 +342,11 @@ impl Server {
 				path.replace_range(path.len() - "/.rss".len().., ".rss");
 			}
 
+			// Forms are only posted from this instance's own pages; from another site they would change the visitor's settings.
+			if req.method() == Method::POST && is_cross_site(&req_headers) {
+				return new_boilerplate(def_headers, req_headers, 403, Body::from("Forbidden")).boxed();
+			}
+
 			// Replace HEAD with GET for routing
 			let (method, is_head) = match req.method() {
 				&Method::HEAD => (&Method::GET, true),
@@ -416,6 +421,13 @@ impl Server {
 	}
 }
 
+/// Whether another site made the browser send this request. Browsers say so
+/// in `Sec-Fetch-Site`; a link opened from the address bar, a bookmark or
+/// another program isn't one.
+pub fn is_cross_site(headers: &HeaderMap) -> bool {
+	headers.get("sec-fetch-site").is_some_and(|site| site == "cross-site")
+}
+
 async fn shutdown_signal() {
 	#[cfg(windows)]
 	// Wait for the CTRL+C signal
@@ -466,7 +478,9 @@ async fn new_boilerplate(
 /// Accept-Encoding: gzip, compress, br
 /// Accept-Encoding: br;q=1.0, gzip;q=0.8, *;q=0.1
 /// ```
-#[cached]
+///
+/// Not cached: the header is the client's, and a cache keyed on it grows with
+/// every new value a client sends.
 fn determine_compressor(accept_encoding: String) -> Option<CompressionType> {
 	if accept_encoding.is_empty() {
 		return None;
@@ -789,6 +803,17 @@ mod tests {
 		assert!(!should_block_banned_user_agent("/robots.txt", Some(user_agent), true));
 		assert!(should_block_banned_user_agent("/", Some(user_agent), true));
 		assert!(!should_block_banned_user_agent("/", Some(user_agent), false));
+	}
+
+	#[test]
+	fn test_is_cross_site() {
+		let site = |value: &'static str| HeaderMap::from_iter([(header::HeaderName::from_static("sec-fetch-site"), header::HeaderValue::from_static(value))]);
+		assert!(is_cross_site(&site("cross-site")));
+		for own in ["same-origin", "same-site", "none"] {
+			assert!(!is_cross_site(&site(own)), "{own}");
+		}
+		// clients that don't send the header: older browsers, feed readers, curl
+		assert!(!is_cross_site(&HeaderMap::new()));
 	}
 
 	#[test]
