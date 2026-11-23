@@ -192,7 +192,7 @@ jobs:
           else
             tags="sha-${SHA::7}"
             if [ -n "$VERSION" ]; then tags="$tags $VERSION latest"
-            elif [ "$GITHUB_REF" = refs/heads/main ]; then tags="$tags dev"; fi
+            elif [ "$GITHUB_REF" = refs/heads/master ]; then tags="$tags dev"; fi
           fi
           echo "TAGS=$tags" >> "$GITHUB_ENV"
 

@@ -14,7 +14,7 @@ permissions: {}
 
 jobs:
   prepare:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -55,7 +55,7 @@ jobs:
             --rawfile toml <(base64 -w0 Cargo.toml) --rawfile lock <(base64 -w0 Cargo.lock) '{
               query: "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }",
               variables: {input: {
-                branch: {repositoryNameWithOwner: $repo, branchName: "main"},
+                branch: {repositoryNameWithOwner: $repo, branchName: "master"},
                 expectedHeadOid: $head,
                 message: {headline: $message},
                 fileChanges: {additions: [{path: "Cargo.toml", contents: $toml}, {path: "Cargo.lock", contents: $lock}]}
