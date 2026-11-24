@@ -106,7 +106,7 @@ For configuration options, see [CONFIGURATION.md](CONFIGURATION.md).
 
 Images are on [ghcr.io](https://github.com/Project516/redlib/pkgs/container/redlib) for `amd64`, `386`, `arm64`, `arm/v7`, `arm/v6`, `riscv64` and `mips64le`, with these tags:
 
-- `latest`: the newest release.
+- `latest`: the newest commit on `master`, or the newest release if one came after it.
 - `<version>`, like `2026.1102.1`: one release; it never changes.
 - `dev`: the newest commit on `master`, between releases.
 - `sha-<commit>`: one commit on `master`; it never changes.
